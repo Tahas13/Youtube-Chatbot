@@ -1,0 +1,37 @@
+# FastAPI
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# LangChain
+langchain==0.3.14
+langchain-openai==0.3.0
+langchain-pinecone==0.2.1
+langchain-community==0.3.14
+langchain-experimental==0.3.4
+langchain-cohere==0.4.2
+
+# LangGraph
+langgraph==0.2.60
+langgraph-checkpoint==2.0.10
+
+# Vector DB
+pinecone
+pinecone-text
+
+# YouTube
+youtube-transcript-api==0.6.3
+yt-dlp
+
+# Local embeddings (free)
+langchain-huggingface==1.2.2
+sentence-transformers==5.4.1
+
+# Utilities
+python-dotenv==1.0.1
+pydantic-settings==2.7.1
+httpx==0.28.1
+redis==5.2.1
+
+# Dev / tests
+pytest==8.4.2

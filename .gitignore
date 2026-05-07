@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.venv/
+backend/venv/
+
+# Environment variables / secrets
+.env
+backend/.env
+
+# Local data / caches
+backend/data/
+*.db
+
+# Node / build output
+extension/node_modules/
+extension/dist/

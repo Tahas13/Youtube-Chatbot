@@ -1,0 +1,187 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base styles ── */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: #0f172a;
+  color: #e2e8f0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.5);
+}
+
+/* ── Glass effect ── */
+@layer components {
+  .glass-surface {
+    @apply bg-surface-800/60 backdrop-blur-xl border border-white/5;
+  }
+
+  .glass-card {
+    @apply bg-surface-800/40 backdrop-blur-lg border border-white/5 rounded-2xl;
+  }
+
+  .glass-input {
+    @apply bg-surface-800/80 backdrop-blur-sm border border-white/10 rounded-xl;
+  }
+}
+
+/* ── Message bubble styles ── */
+@layer components {
+  .message-user {
+    @apply bg-gradient-to-br from-brand-600 to-brand-700 text-white rounded-2xl rounded-br-md;
+    box-shadow: 0 4px 15px rgba(37, 99, 235, 0.2);
+  }
+
+  .message-bot {
+    @apply glass-card text-surface-200 rounded-2xl rounded-bl-md;
+  }
+
+  .message-bot p {
+    @apply leading-relaxed;
+  }
+
+  .message-bot ul, .message-bot ol {
+    @apply pl-4 space-y-1;
+  }
+
+  .message-bot li {
+    @apply text-surface-300;
+  }
+
+  .message-bot strong {
+    @apply text-white font-semibold;
+  }
+
+  .message-bot h1, .message-bot h2, .message-bot h3 {
+    @apply text-white font-semibold mt-3 mb-1;
+  }
+
+  .message-bot h1 { @apply text-lg; }
+  .message-bot h2 { @apply text-base; }
+  .message-bot h3 { @apply text-sm; }
+
+  .message-bot code {
+    @apply font-mono text-xs bg-surface-900/50 text-accent-400 px-1.5 py-0.5 rounded;
+  }
+
+  .message-bot pre {
+    @apply bg-surface-900/50 rounded-lg p-3 overflow-x-auto my-2;
+  }
+
+  .message-bot pre code {
+    @apply bg-transparent p-0;
+  }
+
+  .message-bot hr {
+    @apply border-surface-700/50 my-3;
+  }
+
+  .message-bot blockquote {
+    @apply border-l-2 border-brand-500/50 pl-3 italic text-surface-400;
+  }
+}
+
+/* ── Timestamp link ── */
+@layer components {
+  .timestamp-link {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-mono font-medium
+           cursor-pointer transition-all duration-200 select-none;
+    background: rgba(59, 130, 246, 0.12);
+    color: #60a5fa;
+    border: 1px solid rgba(59, 130, 246, 0.15);
+  }
+
+  .timestamp-link:hover {
+    background: rgba(59, 130, 246, 0.22);
+    border-color: rgba(59, 130, 246, 0.3);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.15);
+  }
+
+  .timestamp-link:active {
+    transform: translateY(0);
+  }
+}
+
+/* ── Typing indicator ── */
+@layer components {
+  .typing-dot {
+    @apply w-2 h-2 rounded-full bg-surface-400;
+    animation: bounceDot 1.4s ease-in-out infinite;
+  }
+
+  .typing-dot:nth-child(1) { animation-delay: 0s; }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+}
+
+/* ── Suggested question pills ── */
+@layer components {
+  .suggestion-pill {
+    @apply px-3 py-2 text-xs font-medium rounded-xl cursor-pointer
+           transition-all duration-200 text-left leading-snug;
+    background: rgba(139, 92, 246, 0.08);
+    color: #a78bfa;
+    border: 1px solid rgba(139, 92, 246, 0.15);
+  }
+
+  .suggestion-pill:hover {
+    background: rgba(139, 92, 246, 0.16);
+    border-color: rgba(139, 92, 246, 0.3);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.1);
+  }
+}
+
+/* ── Shimmer loading ── */
+@layer components {
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      rgba(30, 41, 59, 0.5) 25%,
+      rgba(51, 65, 85, 0.5) 50%,
+      rgba(30, 41, 59, 0.5) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s linear infinite;
+  }
+}
+
+/* ── Gradient text ── */
+.gradient-text {
+  background: linear-gradient(135deg, #60a5fa, #a78bfa, #34d399);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}

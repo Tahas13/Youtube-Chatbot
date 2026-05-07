@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube AI Chatbot",
+  "version": "1.0.0",
+  "description": "Chat with any YouTube video using AI — get summaries, search for moments, and ask questions with clickable timestamps.",
+  "permissions": ["sidePanel", "activeTab", "storage", "tabs"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "YouTube AI Chatbot",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
