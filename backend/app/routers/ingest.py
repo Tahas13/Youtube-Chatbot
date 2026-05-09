@@ -80,8 +80,8 @@ async def ingest_video(request: IngestRequest):
                 detail="Transcript fetched but produced 0 chunks; cannot index this video.",
             )
 
-        # Upsert to Pinecone
-        logger.info(f"Upserting {len(chunks)} chunks to Pinecone")
+        # Upsert to Qdrant
+        logger.info(f"Upserting {len(chunks)} chunks to Qdrant")
         count = await upsert_documents(chunks, video_id)
 
         if count <= 0:

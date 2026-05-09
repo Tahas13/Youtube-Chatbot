@@ -195,10 +195,11 @@ async def run_agent(
 
     except Exception as e:
         logger.error(f"Agent execution failed: {e}", exc_info=True)
+        # Return the actual error message temporarily to help with debugging
         return {
-            "answer": "I'm sorry, I encountered an error while processing your question. Please try again.",
+            "answer": f"I'm sorry, I encountered an error: {str(e)}. Please check your backend logs for more details.",
             "citations": [],
-            "suggested_questions": ["Can you summarize this video?", "What are the main topics?"],
+            "suggested_questions": ["Check API Key", "Check Qdrant Connection"],
             "query_type": "search",
             "domain": "other",
         }

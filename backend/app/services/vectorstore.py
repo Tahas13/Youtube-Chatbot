@@ -1,15 +1,16 @@
 """
-Pinecone vector store operations.
-Handles index creation, upserting, and querying with hybrid search.
+Qdrant vector store operations.
+Handles collection creation, upserting, and querying with hybrid search.
 """
 
 import logging
-import hashlib
 import sqlite3
+import uuid
 from pathlib import Path
 from threading import Lock
 from typing import Optional
-from pinecone import Pinecone, ServerlessSpec
+from qdrant_client import QdrantClient
+from qdrant_client.http import models as qmodels
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from app.config import get_settings
@@ -17,7 +18,7 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 # Module-level singletons
-_pinecone_client: Optional[Pinecone] = None
+_qdrant_client: Optional[QdrantClient] = None
 _embeddings: Optional[HuggingFaceEmbeddings] = None
 _keyword_db_lock = Lock()
 
@@ -59,13 +60,38 @@ def _ensure_keyword_index() -> sqlite3.Connection:
     return conn
 
 
-def get_pinecone_client() -> Pinecone:
-    """Get or create Pinecone client singleton."""
-    global _pinecone_client
-    if _pinecone_client is None:
+def _get_collection_name() -> str:
+    settings = get_settings()
+    return settings.QDRANT_COLLECTION_NAME.strip() or "yt-chatbot"
+
+
+def _get_video_filter(video_id: str) -> qmodels.Filter:
+    return qmodels.Filter(
+        must=[
+            qmodels.FieldCondition(
+                key="video_id",
+                match=qmodels.MatchValue(value=video_id),
+            )
+        ]
+    )
+
+
+def get_qdrant_client() -> QdrantClient:
+    """Get or create Qdrant client singleton."""
+    global _qdrant_client
+    if _qdrant_client is None:
         settings = get_settings()
-        _pinecone_client = Pinecone(api_key=settings.PINECONE_API_KEY)
-    return _pinecone_client
+        qdrant_url = settings.QDRANT_URL.strip()
+        if not qdrant_url:
+            raise RuntimeError("QDRANT_URL is required for vector storage")
+
+        client_kwargs = {"url": qdrant_url}
+        qdrant_api_key = settings.QDRANT_API_KEY.strip()
+        if qdrant_api_key:
+            client_kwargs["api_key"] = qdrant_api_key
+
+        _qdrant_client = QdrantClient(**client_kwargs)
+    return _qdrant_client
 
 
 def get_embeddings() -> HuggingFaceEmbeddings:
@@ -80,39 +106,58 @@ def get_embeddings() -> HuggingFaceEmbeddings:
 
 
 def ensure_index_exists() -> None:
-    """Create Pinecone index if it doesn't exist."""
+    """Create Qdrant collection and payload indices if they don't exist."""
+    from qdrant_client.http import models as http_models
+    
     settings = get_settings()
-    pc = get_pinecone_client()
+    client = get_qdrant_client()
+    collection_name = _get_collection_name()
 
-    existing_indexes = [idx.name for idx in pc.list_indexes()]
-
-    if settings.PINECONE_INDEX_NAME not in existing_indexes:
-        logger.info(f"Creating Pinecone index: {settings.PINECONE_INDEX_NAME}")
-        pc.create_index(
-            name=settings.PINECONE_INDEX_NAME,
-            dimension=settings.EMBEDDING_DIMENSIONS,
-            metric="dotproduct",  # Required for hybrid search
-            spec=ServerlessSpec(
-                cloud=settings.PINECONE_CLOUD,
-                region=settings.PINECONE_REGION,
+    if not client.collection_exists(collection_name):
+        logger.info(f"Creating Qdrant collection: {collection_name}")
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=qmodels.VectorParams(
+                size=settings.EMBEDDING_DIMENSIONS,
+                distance=qmodels.Distance.COSINE,
             ),
         )
-        logger.info(f"Index {settings.PINECONE_INDEX_NAME} created successfully")
+        logger.info(f"Collection {collection_name} created successfully")
     else:
-        logger.info(f"Index {settings.PINECONE_INDEX_NAME} already exists")
-
-
-def get_index():
-    """Get the Pinecone index."""
-    settings = get_settings()
-    pc = get_pinecone_client()
-    return pc.Index(settings.PINECONE_INDEX_NAME)
+        logger.info(f"Collection {collection_name} already exists")
+    
+    # Ensure payload index exists for video_id filtering
+    try:
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name="video_id",
+            field_schema=http_models.PayloadSchemaType.KEYWORD,
+        )
+        logger.info(f"Ensured keyword index on video_id for {collection_name}")
+    except Exception as e:
+        # Index might already exist, which is fine
+        logger.debug(f"Payload index creation: {e}")
+    # Ensure numeric indices for time range filtering (start_time, end_time)
+    try:
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name="start_time",
+            field_schema=http_models.PayloadSchemaType.FLOAT,
+        )
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name="end_time",
+            field_schema=http_models.PayloadSchemaType.FLOAT,
+        )
+        logger.info(f"Ensured numeric payload indices for start_time/end_time on {collection_name}")
+    except Exception as e:
+        logger.debug(f"Payload numeric index creation: {e}")
 
 
 def generate_vector_id(video_id: str, chunk_index: int) -> str:
     """Generate a deterministic vector ID for a chunk."""
     raw = f"{video_id}_{chunk_index}"
-    return hashlib.md5(raw.encode()).hexdigest()
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, raw))
 
 
 async def upsert_documents(
@@ -120,8 +165,8 @@ async def upsert_documents(
     video_id: str,
 ) -> int:
     """
-    Embed and upsert documents into Pinecone.
-    Uses the video_id as the namespace for isolation.
+    Embed and upsert documents into Qdrant.
+    Uses video_id as a payload filter for isolation.
 
     Returns the number of vectors upserted.
     """
@@ -129,13 +174,18 @@ async def upsert_documents(
         return 0
 
     ensure_index_exists()
-    index = get_index()
+    client = get_qdrant_client()
+    collection_name = _get_collection_name()
     embeddings = get_embeddings()
 
     # Delete existing vectors for this video (re-index support)
     try:
-        index.delete(namespace=video_id, delete_all=True)
-        logger.info(f"Cleared existing vectors for namespace: {video_id}")
+        client.delete(
+            collection_name=collection_name,
+            points_selector=qmodels.FilterSelector(filter=_get_video_filter(video_id)),
+            wait=True,
+        )
+        logger.info(f"Cleared existing vectors for video_id: {video_id}")
     except Exception as e:
         logger.debug(f"No existing vectors to clear for {video_id}: {e}")
 
@@ -159,13 +209,13 @@ async def upsert_documents(
         dense_vectors = embeddings.embed_documents(texts)
 
         # Prepare upsert data
-        vectors = []
+        points = []
         keyword_rows = []
         for j, (doc, dense_vec) in enumerate(zip(batch, dense_vectors)):
             vec_id = generate_vector_id(video_id, i + j)
 
-            # Build metadata (Pinecone has metadata size limits)
-            metadata = {
+            # Build payload metadata (kept small for vector DB storage).
+            payload = {
                 "text": doc.page_content[:1000],  # Truncate for metadata storage
                 "video_id": doc.metadata.get("video_id", video_id),
                 "video_title": doc.metadata.get("video_title", "")[:200],
@@ -177,14 +227,20 @@ async def upsert_documents(
                 "chunk_index": doc.metadata.get("chunk_index", i + j),
             }
 
-            vectors.append({
-                "id": vec_id,
-                "values": dense_vec,
-                "metadata": metadata,
-            })
-            keyword_rows.append(metadata)
+            points.append(
+                qmodels.PointStruct(
+                    id=vec_id,
+                    vector=dense_vec,
+                    payload=payload,
+                )
+            )
+            keyword_rows.append(payload)
 
-        index.upsert(vectors=vectors, namespace=video_id)
+        client.upsert(
+            collection_name=collection_name,
+            points=points,
+            wait=True,
+        )
         with _keyword_db_lock:
             conn = _ensure_keyword_index()
             for metadata in keyword_rows:
@@ -216,7 +272,7 @@ async def upsert_documents(
                 )
             conn.commit()
             conn.close()
-        total_upserted += len(vectors)
+        total_upserted += len(points)
 
     logger.info(f"Upserted {total_upserted} vectors for video {video_id}")
     return total_upserted
@@ -226,33 +282,66 @@ async def query_vectors(
     query: str,
     video_id: str,
     top_k: int = 20,
+    time_window: tuple[float, float] | None = None,
 ) -> list[Document]:
     """
-    Query Pinecone for similar documents.
+    Query Qdrant for similar documents.
     Returns LangChain Documents with metadata.
     """
     embeddings = get_embeddings()
-    index = get_index()
+    client = get_qdrant_client()
+    collection_name = _get_collection_name()
+
+    if not client.collection_exists(collection_name):
+        return []
 
     # Generate query embedding
     query_vector = embeddings.embed_query(query)
 
-    # Query Pinecone
-    results = index.query(
-        vector=query_vector,
-        top_k=top_k,
-        namespace=video_id,
-        include_metadata=True,
+    # Query Qdrant
+    # Build filter: base video_id filter plus optional time overlap filter
+    q_filter = _get_video_filter(video_id)
+    if time_window is not None:
+        start, end = time_window
+        try:
+            time_conditions = [
+                qmodels.FieldCondition(
+                    key="start_time",
+                    range=qmodels.Range(lte=end),
+                ),
+                qmodels.FieldCondition(
+                    key="end_time",
+                    range=qmodels.Range(gte=start),
+                ),
+            ]
+            # combine with existing must conditions
+            q_filter.must.extend(time_conditions)
+        except Exception:
+            # If range conditions not supported, ignore and continue
+            pass
+
+    results = client.query_points(
+        collection_name=collection_name,
+        query=query_vector,
+        query_filter=q_filter,
+        limit=top_k,
+        with_payload=True,
     )
+
+    matches = getattr(results, "points", None)
+    if matches is None:
+        matches = getattr(results, "result", None)
+    if matches is None:
+        matches = results if isinstance(results, list) else []
 
     # Convert to LangChain Documents
     documents = []
-    for match in results.get("matches", []):
-        metadata = match.get("metadata", {})
+    for match in matches:
+        metadata = match.payload or {}
         doc = Document(
             page_content=metadata.get("text", ""),
             metadata={
-                "score": match.get("score", 0.0),
+                "score": float(match.score or 0.0),
                 "video_id": metadata.get("video_id", video_id),
                 "video_title": metadata.get("video_title", ""),
                 "channel": metadata.get("channel", ""),
@@ -272,34 +361,64 @@ async def query_keyword_documents(
     query: str,
     video_id: str,
     top_k: int = 20,
+    time_window: tuple[float, float] | None = None,
 ) -> list[Document]:
     """Query local SQLite FTS keyword index for sparse retrieval."""
     try:
         with _keyword_db_lock:
             conn = _ensure_keyword_index()
-            rows = conn.execute(
-                """
-                SELECT
-                    c.text,
-                    c.video_id,
-                    c.video_title,
-                    c.channel,
-                    c.start_time,
-                    c.end_time,
-                    c.start_display,
-                    c.end_display,
-                    c.chunk_index,
-                    bm25(chunks_fts) AS bm25_score
-                FROM chunks_fts
-                JOIN chunks c
-                    ON c.video_id = chunks_fts.video_id
-                    AND c.chunk_index = chunks_fts.chunk_index
-                WHERE chunks_fts MATCH ? AND chunks_fts.video_id = ?
-                ORDER BY bm25_score ASC
-                LIMIT ?
-                """,
-                (query, video_id, top_k),
-            ).fetchall()
+            # If a time window is specified, filter for chunks that overlap
+            # the requested window: (start_time < end) AND (end_time > start)
+            if time_window is not None:
+                start, end = time_window
+                rows = conn.execute(
+                    """
+                    SELECT
+                        c.text,
+                        c.video_id,
+                        c.video_title,
+                        c.channel,
+                        c.start_time,
+                        c.end_time,
+                        c.start_display,
+                        c.end_display,
+                        c.chunk_index,
+                        bm25(chunks_fts) AS bm25_score
+                    FROM chunks_fts
+                    JOIN chunks c
+                        ON c.video_id = chunks_fts.video_id
+                        AND c.chunk_index = chunks_fts.chunk_index
+                    WHERE chunks_fts MATCH ? AND chunks_fts.video_id = ?
+                      AND c.start_time < ? AND c.end_time > ?
+                    ORDER BY bm25_score ASC
+                    LIMIT ?
+                    """,
+                    (query, video_id, end, start, top_k),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        c.text,
+                        c.video_id,
+                        c.video_title,
+                        c.channel,
+                        c.start_time,
+                        c.end_time,
+                        c.start_display,
+                        c.end_display,
+                        c.chunk_index,
+                        bm25(chunks_fts) AS bm25_score
+                    FROM chunks_fts
+                    JOIN chunks c
+                        ON c.video_id = chunks_fts.video_id
+                        AND c.chunk_index = chunks_fts.chunk_index
+                    WHERE chunks_fts MATCH ? AND chunks_fts.video_id = ?
+                    ORDER BY bm25_score ASC
+                    LIMIT ?
+                    """,
+                    (query, video_id, top_k),
+                ).fetchall()
             conn.close()
     except sqlite3.OperationalError:
         # Invalid FTS query terms should degrade gracefully.
@@ -332,18 +451,22 @@ async def query_keyword_documents(
 
 def check_video_indexed(video_id: str) -> dict:
     """
-    Check if a video has been indexed in Pinecone.
+    Check if a video has been indexed in Qdrant.
     Returns stats about the namespace.
     """
     try:
-        index = get_index()
-        stats = index.describe_index_stats()
-        namespaces = stats.get("namespaces", {})
+        client = get_qdrant_client()
+        collection_name = _get_collection_name()
+        if not client.collection_exists(collection_name):
+            return {"indexed": False, "chunk_count": 0}
 
-        if video_id in namespaces:
-            count = namespaces[video_id].get("vector_count", 0)
-            return {"indexed": True, "chunk_count": count}
-        return {"indexed": False, "chunk_count": 0}
+        count_result = client.count(
+            collection_name=collection_name,
+            count_filter=_get_video_filter(video_id),
+            exact=True,
+        )
+        count = int(getattr(count_result, "count", 0) or 0)
+        return {"indexed": count > 0, "chunk_count": count}
     except Exception as e:
         logger.error(f"Error checking index status for {video_id}: {e}")
         return {"indexed": False, "chunk_count": 0}

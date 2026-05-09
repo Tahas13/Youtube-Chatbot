@@ -6,7 +6,7 @@ import type { IngestResponse, IngestStatusResponse, ChatResponse } from '../type
 
 const API_BASE =
   ((import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_API_BASE ?? '').trim() ||
-  'http://localhost:8000';
+  'http://localhost:8001';
 
 class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -147,7 +147,8 @@ export async function sendMessageStream(
   message: string,
   sessionId: string,
   handlers: ChatStreamHandlers,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timeoutMs: number = 60000
 ): Promise<void> {
   let finalReceived = false;
   const wrappedHandlers: ChatStreamHandlers = {
@@ -159,51 +160,100 @@ export async function sendMessageStream(
     },
   };
 
-  const response = await fetch(`${API_BASE}/api/chat/stream`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    },
-    body: JSON.stringify({
-      video_id: videoId,
-      message,
-      session_id: sessionId,
-    }),
-    signal,
-  });
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new ApiError(response.status, errorText || 'Streaming request failed');
-  }
-
-  if (!response.body) {
-    throw new Error('Streaming response body is empty');
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let buffer = '';
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-
-    buffer = processSseBuffer(buffer, decoder.decode(value, { stream: true }), wrappedHandlers);
-    if (finalReceived) {
-      try {
-        await reader.cancel();
-      } catch {
-        // ignore
-      }
-      break;
+  const onExternalAbort = () => timeoutController.abort();
+  if (signal) {
+    if (signal.aborted) {
+      timeoutController.abort();
+    } else {
+      signal.addEventListener('abort', onExternalAbort, { once: true });
     }
   }
+  try {
+    const response = await fetch(`${API_BASE}/api/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify({
+        video_id: videoId,
+        message,
+        session_id: sessionId,
+      }),
+      signal: timeoutController.signal,
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new ApiError(response.status, errorText || 'Streaming request failed');
+    }
 
-  if (buffer.trim()) {
-    processSseEvent(buffer, wrappedHandlers);
+    if (!response.body) {
+      throw new Error('Streaming response body is empty');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer = processSseBuffer(buffer, decoder.decode(value, { stream: true }), wrappedHandlers);
+      if (finalReceived) {
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore
+        }
+        break;
+      }
+    }
+
+    if (buffer.trim()) {
+      processSseEvent(buffer, wrappedHandlers);
+    }
+    clearTimeout(timeoutId);
+    return;
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    if (signal) {
+      signal.removeEventListener('abort', onExternalAbort);
+    }
+    // If aborted due to timeout, request extractive fallback and return it
+    if (err && (err.name === 'AbortError' || err.message === 'The user aborted a request.')) {
+      try {
+        const fallback = await requestExtractiveFallback(videoId, message, sessionId);
+        handlers.onFinal?.(fallback);
+        return;
+      } catch (e) {
+        throw new Error('Streaming aborted and extractive fallback failed');
+      }
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    if (signal) {
+      signal.removeEventListener('abort', onExternalAbort);
+    }
   }
+}
+
+
+/**
+ * Helper: request extractive fallback from server when stream times out.
+ */
+export async function requestExtractiveFallback(videoId: string, message: string, sessionId: string): Promise<ChatResponse> {
+  const res = await fetch(`${API_BASE}/api/chat/extractive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ video_id: videoId, message, session_id: sessionId }),
+  });
+  if (!res.ok) throw new ApiError(res.status, await res.text());
+  return res.json();
 }
 
 /**

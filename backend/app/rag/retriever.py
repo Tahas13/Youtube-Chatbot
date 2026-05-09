@@ -12,6 +12,15 @@ from app.services.vectorstore import query_vectors, query_keyword_documents
 
 logger = logging.getLogger(__name__)
 
+_ranker = None
+_ranker_unavailable = False
+
+
+def _get_result_value(result, key: str):
+    if isinstance(result, dict):
+        return result.get(key)
+    return getattr(result, key, None)
+
 
 @dataclass
 class RetrievalPolicy:
@@ -33,7 +42,7 @@ def get_retrieval_policy(query_type: str, domain: str) -> RetrievalPolicy:
 
     if query_type == "summarize":
         policy.top_k = max(policy.top_k, 30)
-        policy.top_n = max(policy.top_n, 8)
+        policy.top_n = max(policy.top_n, 12)
         policy.mmr_lambda = 0.55
         policy.strategy = "coverage"
     elif query_type == "clarify":
@@ -96,12 +105,13 @@ async def retrieve_with_mmr(
     video_id: str,
     top_k: int = 20,
     lambda_mult: float = 0.7,
+    time_window: tuple[float, float] | None = None,
 ) -> list[Document]:
     """
     Retrieve documents using multiple queries and apply MMR
     for diversity.
 
-    1. Run each query against Pinecone
+    1. Run each query against the dense vector store and local keyword index
     2. Merge and deduplicate results
     3. Apply MMR to select diverse, relevant documents
     """
@@ -119,6 +129,7 @@ async def retrieve_with_mmr(
                 query=query,
                 video_id=video_id,
                 top_k=top_k,
+                time_window=time_window,
             )
         except Exception as e:
             logger.warning(f"Dense retrieval failed (falling back): {e}")
@@ -129,6 +140,7 @@ async def retrieve_with_mmr(
                 query=query,
                 video_id=video_id,
                 top_k=top_k,
+                time_window=time_window,
             )
         except Exception as e:
             logger.warning(f"Sparse retrieval failed (falling back): {e}")
@@ -207,6 +219,24 @@ def _apply_mmr(
     return selected
 
 
+def _get_ranker():
+    global _ranker, _ranker_unavailable
+    if _ranker is not None:
+        return _ranker
+    if _ranker_unavailable:
+        return None
+
+    try:
+        from flashrank import Ranker
+
+        _ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")
+        return _ranker
+    except Exception as e:
+        logger.warning(f"FlashRank unavailable, falling back to score-based ranking: {e}")
+        _ranker_unavailable = True
+        return None
+
+
 def _text_overlap(text1: str, text2: str) -> float:
     """Compute simple word overlap ratio between two texts."""
     words1 = set(text1.lower().split())
@@ -224,61 +254,61 @@ async def rerank_documents(
     top_n: int = 5,
 ) -> list[Document]:
     """
-    Rerank documents using Cohere or fallback to score-based ranking.
+    Rerank documents using FlashRank or fallback to score-based ranking.
     """
-    settings = get_settings()
 
     if not documents:
         return []
 
     top_n = min(top_n, len(documents))
 
-    # Try Cohere reranking
-    if settings.COHERE_API_KEY:
-        try:
-            return await _cohere_rerank(documents, query, top_n)
-        except Exception as e:
-            logger.warning(f"Cohere reranking failed, falling back to score-based: {e}")
+    # Try local FlashRank reranking
+    try:
+        ranker = _get_ranker()
+        if ranker is not None:
+            return await _flashrank_rerank(documents, query, top_n, ranker)
+    except Exception as e:
+        logger.warning(f"FlashRank reranking failed, falling back to score-based: {e}")
 
     # Fallback: sort by existing score and take top N
     sorted_docs = sorted(
         documents,
-        key=lambda d: d.metadata.get("score", 0),
+        key=lambda d: max(
+            d.metadata.get("score", 0),
+            d.metadata.get("fused_score", 0),
+            d.metadata.get("sparse_score", 0),
+        ),
         reverse=True,
     )
     return sorted_docs[:top_n]
 
 
-async def _cohere_rerank(
+async def _flashrank_rerank(
     documents: list[Document],
     query: str,
-    top_n: int = 5,
+    top_n: int,
+    ranker,
 ) -> list[Document]:
-    """Rerank using Cohere's reranking model."""
-    import cohere
+    """Rerank using FlashRank's local cross-encoder model."""
+    from flashrank import RerankRequest
 
-    settings = get_settings()
-    co = cohere.Client(settings.COHERE_API_KEY)
+    passages = [
+        {"id": str(index), "text": doc.page_content}
+        for index, doc in enumerate(documents)
+    ]
 
-    # Extract texts for reranking
-    doc_texts = [doc.page_content for doc in documents]
+    rerank_request = RerankRequest(query=query, passages=passages)
+    results = ranker.rerank(rerank_request)
 
-    # Call Cohere rerank
-    rerank_results = co.rerank(
-        model="rerank-english-v3.0",
-        query=query,
-        documents=doc_texts,
-        top_n=top_n,
-    )
-
-    # Map results back to documents
     reranked = []
-    for result in rerank_results.results:
-        doc = documents[result.index]
-        doc.metadata["rerank_score"] = result.relevance_score
+    for result in results[:top_n]:
+        result_index = int(_get_result_value(result, "id") or 0)
+        relevance_score = float(_get_result_value(result, "score") or 0.0)
+        doc = documents[result_index]
+        doc.metadata["rerank_score"] = relevance_score
         reranked.append(doc)
 
-    logger.info(f"Reranked {len(documents)} → {len(reranked)} documents")
+    logger.info(f"Reranked {len(documents)} → {len(reranked)} documents with FlashRank")
     return reranked
 
 
@@ -287,6 +317,7 @@ async def full_retrieval_pipeline(
     video_id: str,
     query_type: str = "search",
     domain: str = "other",
+    time_window: tuple[float, float] | None = None,
 ) -> list[Document]:
     """
     Execute the full retrieval pipeline:
@@ -297,6 +328,7 @@ async def full_retrieval_pipeline(
     Returns the final top-N most relevant, diverse documents.
     """
     policy = get_retrieval_policy(query_type=query_type, domain=domain)
+    # time_window may be provided by caller to filter retrieval by time overlap
 
     # Step 1 + 2: Retrieve with MMR
     mmr_docs = await retrieve_with_mmr(
@@ -304,6 +336,7 @@ async def full_retrieval_pipeline(
         video_id=video_id,
         top_k=policy.top_k,
         lambda_mult=policy.mmr_lambda,
+        time_window=time_window,
     )
 
     if not mmr_docs:

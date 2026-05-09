@@ -1,5 +1,11 @@
 # Extension Notes
 
+## Production Backend URL
+
+- The extension reads `VITE_API_BASE` at build time.
+- If `VITE_API_BASE` is not set, it falls back to `http://localhost:8000` for local development.
+- For a live deployment, build the extension with `VITE_API_BASE` set to the public FastAPI URL before packaging the `dist` folder.
+
 ## Chat Streaming Mode
 
 - Default behavior comes from `VITE_CHAT_STREAMING` at build time:

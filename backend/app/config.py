@@ -15,20 +15,19 @@ class Settings(BaseSettings):
     """Application settings loaded from .env file."""
 
     # API Keys
-    OPENROUTER_API_KEY: str
-    PINECONE_API_KEY: str
-    COHERE_API_KEY: str = ""
+    GOOGLE_API_KEY: str = ""
+    GROQ_API_KEY: str = ""
 
-    # Pinecone
-    PINECONE_INDEX_NAME: str = "yt-chatbot"
-    PINECONE_CLOUD: str = "aws"
-    PINECONE_REGION: str = "us-east-1"
+    # Qdrant
+    QDRANT_URL: str = ""
+    QDRANT_API_KEY: str = ""
+    QDRANT_COLLECTION_NAME: str = "yt-chatbot"
 
     # Model Configuration
-    # NOTE: Must be a valid OpenRouter model id. See: https://openrouter.ai/api/v1/models
-    LLM_MODEL: str = "openai/gpt-oss-20b:free"
+    # NOTE: Must be a valid Gemini model id.
+    LLM_MODEL: str = "gemini-1.5-flash"
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    EMBEDDING_DIMENSIONS: int = 384 # Changed to match all-MiniLM-L6-v2
+    EMBEDDING_DIMENSIONS: int = 384  # Matches all-MiniLM-L6-v2
 
     # Chunking
     CHUNK_SIZE: int = 1000
@@ -55,6 +54,10 @@ class Settings(BaseSettings):
 
     # Guardrails
     EVIDENCE_CONFIDENCE_THRESHOLD: float = 0.5
+    # LLM behaviour
+    LLM_STEP_TIMEOUT_SECONDS: float = 8.0
+    LLM_MAX_RETRIES: int = 0
+    LLM_FALLBACK_MODEL: str = ""
 
     class Config:
         # Always load backend/.env regardless of current working directory.

@@ -5,13 +5,13 @@
 Copy `backend/.env.example` to `backend/.env` and fill required secrets.
 
 Core keys:
-- `OPENAI_API_KEY`
-- `PINECONE_API_KEY`
-- `PINECONE_INDEX_NAME`
+- `GOOGLE_API_KEY`
+- `QDRANT_URL`
+- `QDRANT_COLLECTION_NAME`
 
 Optional/advanced:
-- `COHERE_API_KEY` (reranking; system falls back to score-based ranking when missing)
-- `PINECONE_CLOUD`, `PINECONE_REGION`
+- `QDRANT_API_KEY` (required for Qdrant Cloud, optional for local Qdrant)
+- `LLM_MODEL` (defaults to `gemini-1.5-flash`)
 - `EMBEDDING_DIMENSIONS`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `SEMANTIC_CHUNKING`
 - Retrieval tuning: `RETRIEVAL_K`, `RETRIEVAL_TOP_N`, `MMR_LAMBDA`, `MMR_FETCH_K`
 - Guardrail tuning: `EVIDENCE_CONFIDENCE_THRESHOLD`
@@ -36,11 +36,15 @@ Operational behavior:
 
 ## Hybrid Retrieval Sparse Index Maintenance
 
-Dense retrieval uses Pinecone. Sparse retrieval uses local SQLite FTS at `KEYWORD_INDEX_SQLITE_PATH`.
+Dense retrieval uses Qdrant. Sparse retrieval uses local SQLite FTS at `KEYWORD_INDEX_SQLITE_PATH`.
 
 During ingest/upsert:
-1. Existing dense vectors for the video namespace are deleted from Pinecone.
+1. Existing dense vectors for the video are deleted from Qdrant.
 2. Existing sparse rows for the video are deleted from SQLite (`chunks` and `chunks_fts`).
 3. New chunks are inserted into both dense and sparse stores.
 
 This keeps dense and sparse indexes aligned per video re-index, without requiring separate maintenance jobs.
+
+## Free Deployment Notes
+
+For a free public backend, deploy the FastAPI app on Hugging Face Spaces with the environment variables above, then point the Chrome extension at that deployed URL using `VITE_API_BASE` during the extension build.

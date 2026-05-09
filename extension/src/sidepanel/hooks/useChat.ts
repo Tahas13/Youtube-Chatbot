@@ -113,7 +113,7 @@ export function useChat(videoId: string, sessionId: string): UseChatReturn {
             if (!receivedAnyEvent) {
               abortRef.current?.abort();
             }
-          }, 8000);
+          }, 30000);
 
           const overallTimeout = window.setTimeout(() => {
             // Avoid hanging forever if the backend/LLM stalls.

@@ -29,13 +29,13 @@ async def lifespan(app: FastAPI):
     from app.routers.ingest import _video_metadata_cache
     chat.set_metadata_cache(_video_metadata_cache)
 
-    # Pre-initialize Pinecone index
+    # Pre-initialize Qdrant collection
     try:
         from app.services.vectorstore import ensure_index_exists
         await asyncio.wait_for(asyncio.to_thread(ensure_index_exists), timeout=10)
-        logger.info("✅ Pinecone index ready")
+        logger.info("✅ Qdrant collection ready")
     except Exception as e:
-        logger.warning(f"⚠️ Pinecone initialization deferred: {e}")
+        logger.warning(f"⚠️ Qdrant initialization deferred: {e}")
 
     yield
 
